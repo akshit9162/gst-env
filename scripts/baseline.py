@@ -2,9 +2,10 @@
 
     python scripts/baseline.py --per-difficulty 3 --out results/opus-5-5.jsonl
     python scripts/baseline.py --model sarvam-105b --per-difficulty 3 --out results/sarvam-105b.jsonl
+    python scripts/baseline.py --model gpt-6-astra --per-difficulty 3 --out results/gpt-6-astra.jsonl
 
-Claude models read ANTHROPIC_API_KEY; Sarvam models read SARVAM_API_KEY.
-Both can be set in a local .env file.
+Claude models read ANTHROPIC_API_KEY, Sarvam models SARVAM_API_KEY and OpenAI
+models (gpt-*) OPENAI_API_KEY. All can be set in a local .env file.
 """
 
 import argparse
@@ -15,14 +16,39 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import anthropic
+import openai
 from sarvamai import SarvamAI
 from sarvamai.core.api_error import ApiError as SarvamApiError
 
 from gst_env import DIFFICULTIES, FilingSession, generate_task
 
-# USD per million tokens (input, output). Sarvam pricing is not recorded here,
-# so its rows report tokens only.
-PRICES = {"claude-opus-5-5": (4.00, 20.00), "claude-sonnet-5-5": (2.00, 10.00), "claude-haiku-5-5": (0.10, 0.50)}
+@dataclass(frozen=True)
+class Price:
+    """USD per million tokens."""
+    input: float
+    output: float
+    cache_read: float
+    cache_write: float
+
+
+# Sarvam bills in rupees; converted at this rate. Update when it drifts.
+INR_PER_USD = 88.0
+
+
+def _inr(input: float, output: float, cache_read: float) -> Price:
+    return Price(input / INR_PER_USD, output / INR_PER_USD, cache_read / INR_PER_USD, input / INR_PER_USD)
+
+
+# List prices as of Oct 2026; check each provider's pricing page before quoting costs.
+# Claude cache writes (5-minute TTL) bill at 1.25x input. Sarvam does not bill writes separately.
+PRICES = {
+    "claude-opus-5-5": Price(4.00, 20.00, 0.20, 5.00),
+    "claude-sonnet-5-5": Price(2.00, 10.00, 0.20, 2.50),
+    "claude-haiku-5-5": Price(0.10, 0.50, 0.01, 0.125),
+    "gpt-6-astra": Price(10.00, 50.00, 1.00, 12.50),
+    "sarvam-105b": _inr(15.0, 60.0, 5.0),  # ₹ per million tokens after the 15 Oct 2026 price cut
+}
+UNPRICED = Price(0, 0, 0, 0)
 
 HEADS = {
     "type": "object",
@@ -111,9 +137,30 @@ class ToolCall:
 class Turn:
     calls: list[ToolCall]
     stop: str
-    input_tokens: int
+    input_tokens: int  # uncached input only
     output_tokens: int
     fatal: bool = False  # stop the episode (API error, refusal, truncation)
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
+
+
+def sarvam_usage(u) -> dict:
+    """prompt_tokens includes cached tokens; split them out."""
+    if not u:
+        return dict(input_tokens=0, output_tokens=0)
+    cached = (u.prompt_tokens_details.cached_tokens or 0) if u.prompt_tokens_details else 0
+    return dict(input_tokens=u.prompt_tokens - cached, output_tokens=u.completion_tokens, cache_read_tokens=cached)
+
+
+def openai_usage(u) -> dict:
+    """input_tokens includes cache reads and writes; split them out."""
+    if not u:
+        return dict(input_tokens=0, output_tokens=0)
+    d = u.input_tokens_details
+    read = (d.cached_tokens or 0) if d else 0
+    write = (getattr(d, "cache_write_tokens", 0) or 0) if d else 0
+    return dict(input_tokens=u.input_tokens - read - write, output_tokens=u.output_tokens,
+                cache_read_tokens=read, cache_write_tokens=write)
 
 
 class ClaudeAgent:
@@ -132,16 +179,24 @@ class ClaudeAgent:
                 max_tokens=16000,
                 tools=self.tools,
                 output_config={"effort": self.effort},
+                # The conversation only ever grows by appending, so each turn
+                # re-reads the previous prefix from cache.
+                cache_control={"type": "ephemeral"},
                 messages=messages,
             )
         except anthropic.APIStatusError as e:
             return Turn([], f"api_error_{e.status_code}", 0, 0, fatal=True)
-        usage = (r.usage.input_tokens, r.usage.output_tokens)
+        usage = dict(
+            input_tokens=r.usage.input_tokens,
+            output_tokens=r.usage.output_tokens,
+            cache_read_tokens=r.usage.cache_read_input_tokens or 0,
+            cache_write_tokens=r.usage.cache_creation_input_tokens or 0,
+        )
         if r.stop_reason in ("refusal", "max_tokens"):
-            return Turn([], r.stop_reason, *usage, fatal=True)
+            return Turn([], r.stop_reason, fatal=True, **usage)
         messages.append({"role": "assistant", "content": r.content})
         calls = [ToolCall(b.id, b.name, b.input) for b in r.content if b.type == "tool_use"]
-        return Turn(calls, r.stop_reason, *usage)
+        return Turn(calls, r.stop_reason, **usage)
 
     def add_results(self, messages: list, results: list[tuple[ToolCall, dict]]) -> None:
         messages.append({"role": "user", "content": [
@@ -181,10 +236,10 @@ class SarvamAgent:
             )
         except SarvamApiError as e:
             return Turn([], f"api_error_{e.status_code}", 0, 0, fatal=True)
-        usage = (r.usage.prompt_tokens, r.usage.completion_tokens) if r.usage else (0, 0)
+        usage = sarvam_usage(r.usage)
         choice = r.choices[0]
         if choice.finish_reason == "length":
-            return Turn([], "length", *usage, fatal=True)
+            return Turn([], "length", fatal=True, **usage)
         tool_calls = choice.message.tool_calls or []
         messages.append({
             "role": "assistant",
@@ -201,7 +256,7 @@ class SarvamAgent:
             except json.JSONDecodeError:
                 args = None
             calls.append(ToolCall(tc.id, tc.function.name, args))
-        return Turn(calls, choice.finish_reason, *usage)
+        return Turn(calls, choice.finish_reason, **usage)
 
     def add_results(self, messages: list, results: list[tuple[ToolCall, dict]]) -> None:
         for call, out in results:
@@ -211,8 +266,60 @@ class SarvamAgent:
         messages.append({"role": "user", "content": NUDGE})
 
 
+class OpenAIAgent:
+    """Responses API; every output item (including reasoning) is replayed each turn."""
+
+    def __init__(self, model: str, effort: str):
+        self.client = openai.OpenAI()
+        self.model, self.effort = model, effort
+        self.tools = [
+            {"type": "function", "name": t["name"], "description": t["description"], "parameters": t["input_schema"], "strict": True}
+            for t in TOOLS
+        ]
+
+    def start(self, prompt: str) -> list:
+        return [{"role": "user", "content": prompt}]
+
+    def turn(self, messages: list) -> Turn:
+        try:
+            r = self.client.responses.create(
+                model=self.model,
+                input=messages,
+                tools=self.tools,
+                reasoning={"effort": self.effort},
+                max_output_tokens=16000,
+            )
+        except openai.APIStatusError as e:
+            return Turn([], f"api_error_{e.status_code}", 0, 0, fatal=True)
+        usage = openai_usage(r.usage)
+        if r.status != "completed":
+            return Turn([], r.status, fatal=True, **usage)
+        messages.extend(item.model_dump(exclude_none=True, by_alias=True) for item in r.output)
+        calls = []
+        for item in r.output:
+            if item.type != "function_call":
+                continue
+            try:
+                args = json.loads(item.arguments)
+            except json.JSONDecodeError:
+                args = None
+            calls.append(ToolCall(item.call_id, item.name, args))
+        return Turn(calls, "tool_use" if calls else "end_turn", **usage)
+
+    def add_results(self, messages: list, results: list[tuple[ToolCall, dict]]) -> None:
+        for call, out in results:
+            messages.append({"type": "function_call_output", "call_id": call.id, "output": json.dumps(out)})
+
+    def nudge(self, messages: list) -> None:
+        messages.append({"role": "user", "content": NUDGE})
+
+
 def make_agent(model: str, effort: str):
-    return SarvamAgent(model) if model.startswith("sarvam") else ClaudeAgent(model, effort)
+    if model.startswith("sarvam"):
+        return SarvamAgent(model)
+    if model.startswith("gpt"):
+        return OpenAIAgent(model, effort)
+    return ClaudeAgent(model, effort)
 
 
 def call_tool(session: FilingSession, call: ToolCall) -> dict:
@@ -239,7 +346,7 @@ def call_tool(session: FilingSession, call: ToolCall) -> dict:
 def run_episode(agent, model: str, effort: str, task, max_turns: int) -> dict:
     session = FilingSession(task)
     messages = agent.start(session.instructions())
-    input_tokens = output_tokens = turns = tool_calls = 0
+    input_tokens = output_tokens = cache_read = cache_write = turns = tool_calls = 0
     stop = None
 
     while not session.done and turns < max_turns:
@@ -247,6 +354,8 @@ def run_episode(agent, model: str, effort: str, task, max_turns: int) -> dict:
         t = agent.turn(messages)
         input_tokens += t.input_tokens
         output_tokens += t.output_tokens
+        cache_read += t.cache_read_tokens
+        cache_write += t.cache_write_tokens
         stop = t.stop
         if t.fatal:
             break
@@ -256,7 +365,11 @@ def run_episode(agent, model: str, effort: str, task, max_turns: int) -> dict:
         tool_calls += len(t.calls)
         agent.add_results(messages, [(c, call_tool(session, c)) for c in t.calls])
 
-    price_in, price_out = PRICES.get(model, (0, 0))
+    p = PRICES.get(model, UNPRICED)
+    cost = (input_tokens * p.input + cache_write * p.cache_write
+            + cache_read * p.cache_read + output_tokens * p.output) / 1e6
+    # What the same episode would have cost with every input token billed at full price.
+    uncached_cost = ((input_tokens + cache_write + cache_read) * p.input + output_tokens * p.output) / 1e6
     result = session.result or {"reward": 0.0, "passed": False, "fields": {}}
     return {
         "task_id": task.task_id,
@@ -272,8 +385,11 @@ def run_episode(agent, model: str, effort: str, task, max_turns: int) -> dict:
         "tool_calls": tool_calls,
         "stop_reason": stop,
         "input_tokens": input_tokens,
+        "cache_read_tokens": cache_read,
+        "cache_write_tokens": cache_write,
         "output_tokens": output_tokens,
-        "cost_usd": round((input_tokens * price_in + output_tokens * price_out) / 1e6, 4),
+        "cost_usd": round(cost, 4),
+        "uncached_cost_usd": round(uncached_cost, 4),
     }
 
 
@@ -325,8 +441,12 @@ def main() -> None:
         if sub:
             print(f"  {d:<7} pass={sum(r['passed'] for r in sub)}/{len(sub)}  "
                   f"mean_reward={sum(r['reward'] for r in sub) / len(sub):.3f}")
-    print(f"  total cost ${sum(r['cost_usd'] for r in rows):.2f}  "
-          f"tokens in/out {sum(r['input_tokens'] for r in rows)}/{sum(r['output_tokens'] for r in rows)}")
+    cost = sum(r["cost_usd"] for r in rows)
+    uncached = sum(r["uncached_cost_usd"] for r in rows)
+    saved = f"  (without caching ${uncached:.2f}, saved {1 - cost / uncached:.0%})" if uncached else ""
+    print(f"  total cost ${cost:.2f}{saved}")
+    print(f"  tokens: input {sum(r['input_tokens'] for r in rows)}, cache read {sum(r['cache_read_tokens'] for r in rows)}, "
+          f"cache write {sum(r['cache_write_tokens'] for r in rows)}, output {sum(r['output_tokens'] for r in rows)}")
 
 
 if __name__ == "__main__":

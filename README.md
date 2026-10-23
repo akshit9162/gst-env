@@ -17,6 +17,7 @@ plain-text agents and for training as well as evaluation.
 | Model | Easy | Medium | Hard |
 |---|---|---|---|
 | Claude Opus 5.5 (high effort) | pending | pending | pending |
+| GPT (OpenAI) | pending | pending | pending |
 | Sarvam-105B | pending | pending | pending |
 
 Pass rate = share of tasks where every graded field is correct. Reproduce with `scripts/baseline.py`.
@@ -70,8 +71,9 @@ python3 -m venv .venv && .venv/bin/pip install -e ".[dev,baseline]"
 .venv/bin/python -m pytest -q
 .venv/bin/python scripts/export_tasks.py --per-difficulty 50     # data/tasks.jsonl + answers.jsonl
 
-# API keys go in .env: ANTHROPIC_API_KEY=... and/or SARVAM_API_KEY=...
+# API keys go in .env: ANTHROPIC_API_KEY, OPENAI_API_KEY and/or SARVAM_API_KEY
 .venv/bin/python scripts/baseline.py --per-difficulty 3 --out results/opus-5-5.jsonl
+.venv/bin/python scripts/baseline.py --model gpt-6-astra --per-difficulty 3 --out results/gpt-6-astra.jsonl
 .venv/bin/python scripts/baseline.py --model sarvam-105b --per-difficulty 3 --out results/sarvam-105b.jsonl
 ```
 
@@ -85,7 +87,7 @@ python3 -m venv .venv && .venv/bin/pip install -e ".[dev,baseline]"
 | `gst_env/grader.py` | Weighted field-level reward |
 | `gst_env/tools.py` | Tool interface and episode state |
 | `scripts/export_tasks.py` | Dumps tasks and answer keys as JSONL |
-| `scripts/baseline.py` | Runs Claude or Sarvam models as the agent and records rewards and cost |
+| `scripts/baseline.py` | Runs Claude, OpenAI (gpt-*) or Sarvam models as the agent and records rewards and cost |
 | `scripts/reward_audit.py` | Scores degenerate and shortcut strategies to check the reward can't be gamed |
 
 ## Roadmap

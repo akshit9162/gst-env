@@ -6,7 +6,7 @@ requires-python = ">=3.11"
 
 [project.optional-dependencies]
 dev = ["pytest"]
-baseline = ["anthropic", "sarvamai"]
+baseline = ["anthropic", "openai", "sarvamai"]
 
 [tool.setuptools]
 packages = ["gst_env"]
