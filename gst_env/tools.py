@@ -10,11 +10,13 @@ from .rules import BLOCKED_CATEGORIES, ELIGIBLE_CATEGORIES, HOME_STATE, RCM_CATE
 PAGE_SIZE = 10
 
 INSTRUCTIONS = """You are filing GSTR-3B for {gstin} ({state}) for period {period}.
-Use the tools to read every sale and purchase invoice, then call submit_return once with:
+Use the tools to read every sale and purchase invoice and the electronic credit ledger balance
+brought forward, then call submit_return once with:
 outward_taxable_value, nil_exempt_value, outward_tax{{igst,cgst,sgst}}, rcm_tax{{igst,cgst,sgst}},
 itc_available{{igst,cgst,sgst}}, blocked_itc, total_cash_payable (all in whole rupees).
-Apply ITC utilisation as per Rule 88A and minimise cash outflow. Tax under reverse charge
-must be paid in cash. You can only submit once."""
+itc_available is this period's eligible ITC only. Set off liability using this period's ITC plus
+the ledger balance, as per Rule 88A, minimising cash outflow. Tax under reverse charge must be
+paid in cash. You can only submit once."""
 
 
 class FilingSession:
@@ -47,6 +49,10 @@ class FilingSession:
             if inv.invoice_id == invoice_id:
                 return asdict(inv)
         return {"error": f"invoice {invoice_id} not found"}
+
+    def get_credit_ledger(self) -> dict:
+        """Return the electronic credit ledger balance brought forward into this period."""
+        return {"opening_balance": dict(self.task.opening_credit)}
 
     def describe_category(self, category: str) -> dict:
         """Describe a purchase category code."""

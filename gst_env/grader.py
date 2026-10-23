@@ -37,7 +37,14 @@ def grade(task: Task, submission: dict) -> dict:
         except (TypeError, ValueError):
             ok = False
         fields[path] = ok
-    score = sum(WEIGHTS[p] for p, ok in fields.items() if ok) / sum(WEIGHTS.values())
+
+    # Fields whose true value is zero can only cost reward, never earn it;
+    # otherwise an all-zero submission scores well on simple tasks.
+    earnable = [p for p in WEIGHTS if _get(truth, p) != 0]
+    zero = [p for p in WEIGHTS if _get(truth, p) == 0]
+    earned = sum(WEIGHTS[p] for p in earnable if fields[p])
+    penalty = sum(WEIGHTS[p] for p in zero if not fields[p])
+    score = max(earned - penalty, 0) / sum(WEIGHTS[p] for p in earnable)
     return {
         "reward": round(score, 4),
         "passed": all(fields.values()),

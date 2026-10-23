@@ -92,8 +92,10 @@ def solve(task: Task) -> dict:
         else:
             _add(itc, tax)
 
-    # RCM tax must be paid in cash; ITC can only be set off against forward-charge tax.
-    cash = minimum_cash(outward, itc)
+    # RCM tax must be paid in cash; ITC (this month's plus the ledger balance
+    # brought forward) can only be set off against forward-charge tax.
+    credit = {h: itc[h] + task.opening_credit[h] for h in HEADS}
+    cash = minimum_cash(outward, credit)
     for h in HEADS:
         cash[h] += rcm[h]
 

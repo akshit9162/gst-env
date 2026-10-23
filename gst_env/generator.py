@@ -14,10 +14,10 @@ from .rules import (
 )
 
 DIFFICULTIES = {
-    # n_sales, n_purchases, inter-state, nil-rated, blocked ITC, reverse charge
-    "easy": dict(n_sales=(3, 5), n_purchases=(2, 4), inter=False, nil=False, blocked=False, rcm=False),
-    "medium": dict(n_sales=(6, 10), n_purchases=(4, 7), inter=True, nil=True, blocked=False, rcm=False),
-    "hard": dict(n_sales=(10, 18), n_purchases=(8, 14), inter=True, nil=True, blocked=True, rcm=True),
+    # n_sales, n_purchases, inter-state, nil-rated, blocked ITC, reverse charge, opening credit ledger
+    "easy": dict(n_sales=(3, 5), n_purchases=(2, 4), inter=False, nil=False, blocked=False, rcm=False, ledger=False),
+    "medium": dict(n_sales=(6, 10), n_purchases=(4, 7), inter=True, nil=True, blocked=False, rcm=False, ledger=False),
+    "hard": dict(n_sales=(10, 18), n_purchases=(8, 14), inter=True, nil=True, blocked=True, rcm=True, ledger=True),
 }
 
 
@@ -40,6 +40,8 @@ class Task:
     period: str
     filer_gstin: str
     invoices: list[Invoice] = field(default_factory=list)
+    # Electronic credit ledger balance brought forward from earlier periods.
+    opening_credit: dict[str, int] = field(default_factory=lambda: {"igst": 0, "cgst": 0, "sgst": 0})
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -59,8 +61,8 @@ def _value(rng: random.Random, lo: int = 5_000, hi: int = 500_000) -> int:
     return rng.randint(lo // VALUE_STEP, hi // VALUE_STEP) * VALUE_STEP
 
 
-def _state(rng: random.Random, inter: bool) -> str:
-    if inter and rng.random() < 0.4:
+def _state(rng: random.Random, inter_share: float) -> str:
+    if rng.random() < inter_share:
         return rng.choice([s for s in STATES if s != HOME_STATE])
     return HOME_STATE
 
@@ -75,10 +77,12 @@ def generate_task(seed: int, difficulty: str = "medium", period: str = "2026-09"
         filer_gstin=_gstin(rng, HOME_STATE),
     )
     taxed_rates = [r for r in RATES if r]
+    # Some businesses trade mostly within the state, others mostly across states.
+    inter_share = rng.uniform(0.0, 0.6) if cfg["inter"] else 0.0
 
     for i in range(rng.randint(*cfg["n_sales"])):
         b2b = rng.random() < 0.7
-        state = _state(rng, cfg["inter"])
+        state = _state(rng, inter_share)
         rate = 0 if cfg["nil"] and rng.random() < 0.15 else rng.choice(taxed_rates)
         task.invoices.append(Invoice(
             invoice_id=f"S-{i + 1:03d}",
@@ -90,7 +94,7 @@ def generate_task(seed: int, difficulty: str = "medium", period: str = "2026-09"
         ))
 
     for i in range(rng.randint(*cfg["n_purchases"])):
-        state = _state(rng, cfg["inter"])
+        state = _state(rng, inter_share)
         if cfg["rcm"] and rng.random() < 0.15:
             category = rng.choice(list(RCM_CATEGORIES))
             rate, rcm = RCM_CATEGORIES[category][1], True
@@ -109,4 +113,14 @@ def generate_task(seed: int, difficulty: str = "medium", period: str = "2026-09"
             category=category,
             reverse_charge=rcm,
         ))
+
+    # Uneven carried-forward balances make the head-wise set-off rules and the
+    # cash-only rule for reverse charge actually change the answer.
+    if cfg["ledger"]:
+        heavy, light = rng.sample(["cgst", "sgst"], 2)
+        task.opening_credit = {
+            "igst": rng.choice([0, rng.randint(1, 200_000)]),
+            heavy: rng.randint(100_000, 600_000),
+            light: rng.randint(0, 50_000),
+        }
     return task

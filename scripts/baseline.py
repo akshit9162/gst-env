@@ -53,6 +53,11 @@ TOOLS = [
         },
     },
     {
+        "name": "get_credit_ledger",
+        "description": "Get the electronic credit ledger balance (IGST, CGST, SGST) brought forward into this period.",
+        "input_schema": {"type": "object", "properties": {}, "required": [], "additionalProperties": False},
+    },
+    {
         "name": "describe_category",
         "description": "Describe what a purchase category code means.",
         "input_schema": {
@@ -222,6 +227,8 @@ def call_tool(session: FilingSession, call: ToolCall) -> dict:
                 return session.get_invoice(args["invoice_id"])
             case "describe_category":
                 return session.describe_category(args["category"])
+            case "get_credit_ledger":
+                return session.get_credit_ledger()
             case "submit_return":
                 return session.submit_return(args["gstr3b"])
     except (KeyError, TypeError) as e:

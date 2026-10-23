@@ -101,3 +101,27 @@ def test_session_reads_invoices_and_submits_once():
     s.submit_return(solve(task))
     assert s.result["passed"]
     assert "error" in s.submit_return({})
+
+
+def test_ledger_balance_reduces_cash_but_never_pays_rcm():
+    task = _task(sale("36", 10_000, 18), purchase("36", 10_000, 18, "legal_services", rcm=True, n=2))
+    task.opening_credit = {"igst": 0, "cgst": 50_000, "sgst": 50_000}
+    truth = solve(task)
+    assert truth["cash_payable"] == {"igst": 0, "cgst": 900, "sgst": 900}  # only the RCM tax
+    assert truth["itc_available"] == {"igst": 0, "cgst": 900, "sgst": 900}  # this month's ITC only
+
+
+def test_uneven_ledger_cgst_cannot_cover_sgst():
+    task = _task(sale("36", 100_000, 18))
+    task.opening_credit = {"igst": 0, "cgst": 100_000, "sgst": 0}
+    assert solve(task)["cash_payable"] == {"igst": 0, "cgst": 0, "sgst": 9_000}
+
+
+def test_hard_tasks_always_carry_a_ledger_balance():
+    assert all(sum(generate_task(s, "hard").opening_credit.values()) > 0 for s in range(50))
+    assert all(sum(generate_task(s, "easy").opening_credit.values()) == 0 for s in range(50))
+
+
+def test_session_exposes_ledger():
+    task = generate_task(4, "hard")
+    assert FilingSession(task).get_credit_ledger() == {"opening_balance": task.opening_credit}
