@@ -1,0 +1,12 @@
+[project]
+name = "gst-env"
+version = "0.1.0"
+description = "RL environment for India GSTR-3B filing with outcome-based grading"
+requires-python = ">=3.11"
+
+[project.optional-dependencies]
+dev = ["pytest"]
+baseline = ["anthropic", "sarvamai"]
+
+[tool.setuptools]
+packages = ["gst_env"]
