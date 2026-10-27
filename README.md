@@ -1,5 +1,7 @@
 # gst-env
 
+**Walkthrough:** [akshit9162.github.io/gst-env](https://akshit9162.github.io/gst-env)
+
 **RL environments and benchmarks for Indian tax and compliance work, used to train and evaluate AI agents.**
 
 Agent training today mostly targets Western SaaS such as Salesforce, Jira and Excel. Compliance work in
