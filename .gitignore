@@ -5,3 +5,5 @@ data/
 results/
 .env
 *.egg-info/
+.impeccable/
+.hallmark/
