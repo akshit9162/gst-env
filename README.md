@@ -101,6 +101,13 @@ python3 -m venv .venv && .venv/bin/pip install -e ".[dev,baseline]"
 
 ## Simplifications (CA review in progress)
 
+**Scope:** this version tests GST *computation* (tax-head splits, blocked credit, reverse charge, Rule 88A
+set-off). It does not reproduce today's filing workflow. Since the July 2025 tax period, GSTR-3B outward
+liability (Tables 3.1/3.2) auto-populates from GSTR-1 and is non-editable, with corrections through GSTR-1A.
+ITC flows from GSTR-2B through the Invoice Management System (IMS), and an ITC lock on Table 4A has been
+indicated for around July 2026. Modelling the GSTR-1 → IMS/2B → 3B workflow and the official table layout
+is the next tier.
+
 1. Rates use the post-22 Sep 2025 slabs (0/5/18/40). No cess.
 2. Place of supply is the counterparty's state. No exports, SEZ or special place-of-supply services.
 3. Blocked credit is all-or-nothing per invoice. No Rule 42/43 or Rule 37 reversals.
